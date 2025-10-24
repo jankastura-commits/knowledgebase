@@ -216,6 +216,22 @@ async function ask(){
   out && (out.textContent = j.answer + (cites ? `\n\nZdroje:\n${cites}` : ''));
 }
 
+async function buildIndexBg(){
+  if(!dstFolder)  return alert('Vyber cílovou složku.');
+  if(!tokenWrite) return alert('Nejdřív „Připojit (write)“.');
+  const log = document.getElementById('indexLog');
+  log && (log.textContent = 'Spouštím background build…\n');
+  const r = await fetch('/.netlify/functions/rag-build-index-background', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+tokenWrite},
+    body: JSON.stringify({ folderId: dstFolder.id, chunkSize: 1500, chunkOverlap: 200 })
+  });
+  const j = await r.json().catch(()=> ({}));
+  log && (log.textContent += (r.ok ? '✔ Odstartováno. Za chvíli hotovo (záznam v Logs).' : ('Chyba: '+(j.error||r.statusText))));
+}
+window.buildIndexBg = buildIndexBg;
+
+
 // --- Export do window pro onclick v HTML ---
 window.connectRead = connectRead;
 window.connectWrite = connectWrite;
