@@ -68,9 +68,15 @@ exports.handler = async (event) => {
   try{
     if(event.httpMethod!=='POST') return json(405,{error:'Method Not Allowed'});
     if(!(process.env.OPENAI_API_KEY||'').trim()) return json(500,{error:'OPENAI_API_KEY is missing'});
-    const auth = event.headers.authorization || '';
-    const token = auth.replace(/^Bearer\s+/i,'').trim();
-    if(!token) return json(401,{error:'Missing Google token'});
+
+    // — robustní čtení Authorization —
+    const h = event.headers || {};
+    const auth = h.authorization || h.Authorization || h['x-authorization'] || '';
+    const token = (auth || '').replace(/^Bearer\s+/i,'').trim();
+
+    console.log('[build] got auth header?', !!auth, 'tokenLen:', token.length);
+
+    if(!token) return json(401,{error:'Missing Google token (Authorization: Bearer <access_token>)'});
 
     const { folderId, chunkSize=1500, chunkOverlap=200 } = JSON.parse(event.body||'{}');
     if(!folderId) return json(400,{error:'Missing folderId'});
