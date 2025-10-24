@@ -1,219 +1,127 @@
-// /.netlify/functions/admin-upload-convert
-// Přijme soubor (base64), převede na text (PDF/DOCX/TXT/HTML), uloží do /text a aktualizuje manifest.
-// Volitelně uloží originál do /source.
-const pdfParse = require('pdf-parse');
-const mammoth = require('mammoth');
-const crypto = require('crypto');
+// netlify/functions/admin-upload-convert.js
+// Upload souboru do cílové složky, volitelně převést DOCX/PDF → Google Doc a uložit TXT.
+// Zaktualizuje manifest.jsonl (create vs update; update bez parents!).
 
+const fetch = global.fetch; // Netlify runtime
+function json(status, body) {
+  return { statusCode: status, headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) };
+}
 function b64ToBuffer(b64){ return Buffer.from(b64, 'base64'); }
 
-async function ensureChildFolder(token, parentId, name){
-  const listURL = new URL('https://www.googleapis.com/drive/v3/files');
-  listURL.search = new URLSearchParams({
-    q: `'${parentId}' in parents and name = '${name.replace(/'/g,"\'")}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-    fields: 'files(id,name)',
-    includeItemsFromAllDrives: 'true',
-    supportsAllDrives: 'true',
-    pageSize: '1'
-  }).toString();
-  const H = { Authorization: `Bearer ${token}`, 'Content-Type':'application/json' };
-  const r = await fetch(listURL, { headers: H });
-  const j = await r.json();
-  if (j.files && j.files[0]) return j.files[0].id;
-
-  // create
-  const cr = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
-    method:'POST', headers: H, body: JSON.stringify({
-      name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId]
-    })
-  });
-  const cj = await cr.json();
-  if (!cr.ok) throw new Error(cj.error?.message || 'Folder create failed');
-  return cj.id;
-}
-
-function stripHtml(html){
-  return String(html||'').replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi,' ')
-                         .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi,' ')
-                         .replace(/<[^>]+>/g,' ')
-                         .replace(/\s+/g,' ')
-                         .trim();
-}
-
-async function uploadText(token, folderId, baseName, text, asGDoc){
+async function driveCreateMultipart(token, folderId, name, mimeType, dataBuffer, asGoogleDoc=false) {
   const boundary = 'b-' + Math.random().toString(16).slice(2);
   const metadata = {
-    name: asGDoc ? `${baseName} (text)` : `${baseName}.txt`,
+    name,
     parents: [folderId],
-    mimeType: asGDoc ? 'application/vnd.google-apps.document' : 'text/plain'
+    ...(asGoogleDoc ? { mimeType: 'application/vnd.google-apps.document' } : {})
   };
-  const media = Buffer.from(text, 'utf8');
-  const head = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`+
-               `--${boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n`;
+  const head =
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: ${mimeType || 'application/octet-stream'}\r\n\r\n`;
   const tail = `\r\n--${boundary}--`;
-  const body = Buffer.concat([Buffer.from(head), media, Buffer.from(tail)]);
-  const up = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true', {
-    method:'POST', headers:{ Authorization:`Bearer ${token}`, 'Content-Type':`multipart/related; boundary=${boundary}` }, body
+  const body = Buffer.concat([Buffer.from(head), dataBuffer, Buffer.from(tail)]);
+  const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true', {
+    method:'POST',
+    headers:{ Authorization:`Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+    body
   });
-  const j = await up.json();
-  if (!up.ok) throw new Error(j.error?.message || 'Upload text failed');
-  return { id: j.id, name: metadata.name };
+  const j = await r.json();
+  if(!r.ok) throw new Error(j.error?.message || r.statusText);
+  return j; // { id, name, mimeType, ... }
 }
 
-async function uploadOriginal(token, folderId, fileName, mimeType, buf){
-  const boundary = 'b-' + Math.random().toString(16).slice(2);
-  const metadata = { name: fileName, parents: [folderId] };
-  const head = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`+
-               `--${boundary}\r\nContent-Type: ${mimeType||'application/octet-stream'}\r\n\r\n`;
-  const tail = `\r\n--${boundary}--`;
-  const body = Buffer.concat([Buffer.from(head), buf, Buffer.from(tail)]);
-  const up = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true', {
-    method:'POST', headers:{ Authorization:`Bearer ${token}`, 'Content-Type':`multipart/related; boundary=${boundary}` }, body
-  });
-  const j = await up.json();
-  if (!up.ok) throw new Error(j.error?.message || 'Upload original failed');
-  return { id: j.id, name: fileName };
+async function driveSearch(token, folderId, name){
+  const url = new URL('https://www.googleapis.com/drive/v3/files');
+  url.search = new URLSearchParams({
+    q: `'${folderId}' in parents and name = '${name.replace(/'/g,"\\'")}' and trashed = false`,
+    fields: 'files(id,name)',
+    pageSize: '1',
+    supportsAllDrives: 'true',
+    includeItemsFromAllDrives: 'true'
+  }).toString();
+  const r = await fetch(url, { headers:{Authorization:`Bearer ${token}`}});
+  const j = await r.json(); if(!r.ok) throw new Error(j.error?.message || r.statusText);
+  return j.files?.[0] || null;
 }
-
-async function readFileText(buf, mimeType, fileName){
-  const nameLower = (fileName||'').toLowerCase();
-  if ((mimeType && mimeType.includes('pdf')) || nameLower.endsWith('.pdf')){
-    const res = await pdfParse(buf);
-    return (res.text||'').trim();
-  }
-  if ((mimeType && (mimeType.includes('word')||mimeType.includes('msword'))) || nameLower.endsWith('.docx') || nameLower.endsWith('.doc')){
-    const r = await mammoth.extractRawText({ buffer: buf });
-    return (r.value||'').trim();
-  }
-  if (mimeType && mimeType.startsWith('text/')){
-    return buf.toString('utf8');
-  }
-  if ((mimeType && mimeType.includes('html')) || nameLower.endsWith('.html') || nameLower.endsWith('.htm')){
-    return stripHtml(buf.toString('utf8'));
-  }
-  if (nameLower.endsWith('.csv') || nameLower.endsWith('.tsv')){
-    return buf.toString('utf8');
-  }
-  // fallback: try utf8
-  return buf.toString('utf8');
-}
-
-async function getFile(token, fileId){
-  const r = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { headers:{ Authorization:`Bearer ${token}` }});
-  if (!r.ok) throw new Error(`Read file ${fileId} failed: ${r.status}`);
+async function driveDownloadTextFromGDoc(token, fileId){
+  const url = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain&supportsAllDrives=true`;
+  const r = await fetch(url, { headers:{Authorization:`Bearer ${token}`}});
+  if(!r.ok) throw new Error('Export failed: '+(await r.text()));
   return await r.text();
 }
-
-async function writeManifestLine(token, datasetFolderId, lineObj){
-  // find manifest.jsonl
-  const listURL = new URL('https://www.googleapis.com/drive/v3/files');
-  listURL.search = new URLSearchParams({
-    q: `'${datasetFolderId}' in parents and name = 'manifest.jsonl' and trashed = false`,
-    fields: 'files(id,name)',
-    includeItemsFromAllDrives: 'true',
-    supportsAllDrives: 'true',
-    pageSize: '1'
-  }).toString();
-  const H = { Authorization: `Bearer ${token}` };
-  const r = await fetch(listURL, { headers: H });
-  const j = await r.json();
-  const found = j.files && j.files[0];
-  const newLine = JSON.stringify(lineObj) + "\n";
-
-  if (found) {
-    // ---- UPDATE OBSAHU (bez parents!) ----
-    // stáhni dosavadní obsah
-    const oldResp = await fetch(`https://www.googleapis.com/drive/v3/files/${found.id}?alt=media`, { headers: H });
-    const oldText = oldResp.ok ? await oldResp.text() : '';
-    const content = oldText + newLine;
-
-    // nejjednodušší update: uploadType=media (PATCH) – mění jen obsah
-    const up = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${found.id}?uploadType=media&supportsAllDrives=true`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: content
-    });
-    if (!up.ok) {
-      const uj = await up.text();
-      throw new Error(`Manifest update failed: ${uj}`);
-    }
-    return found.id;
-  } else {
-    // ---- CREATE (tady parents být MUSÍ) ----
-    const boundary = 'b-' + Math.random().toString(16).slice(2);
-    const metadata = { name: 'manifest.jsonl', parents:[datasetFolderId], mimeType:'application/json' };
-    const head = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`+
-                 `--${boundary}\r\nContent-Type: application/json\r\n\r\n`;
-    const tail = `\r\n--${boundary}--`;
-    const body = Buffer.concat([Buffer.from(head), Buffer.from(newLine,'utf8'), Buffer.from(tail)]);
-    const up = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true', {
-      method:'POST', headers:{ Authorization:`Bearer ${token}`, 'Content-Type':`multipart/related; boundary=${boundary}` }, body
-    });
-    const uj = await up.json();
-    if (!up.ok) throw new Error(uj.error?.message || 'Manifest create failed');
-    return uj.id;
-  }
+async function driveUpdateMedia(token, fileId, content, contentType='application/json'){
+  const r = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media&supportsAllDrives=true`, {
+    method:'PATCH',
+    headers:{ Authorization:`Bearer ${token}`, 'Content-Type': contentType },
+    body: content
+  });
+  if(!r.ok) throw new Error('Update failed: '+(await r.text()));
+}
+async function driveCreateTextFile(token, folderId, name, content){
+  const boundary = 'b-' + Math.random().toString(16).slice(2);
+  const metadata = { name, parents:[folderId], mimeType:'text/plain' };
+  const head = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+               `--${boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n`;
+  const tail = `\r\n--${boundary}--`;
+  const body = Buffer.concat([Buffer.from(head), Buffer.from(content, 'utf8'), Buffer.from(tail)]);
+  const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true', {
+    method:'POST', headers:{Authorization:`Bearer ${token}`, 'Content-Type':`multipart/related; boundary=${boundary}`}, body
+  });
+  const j = await r.json(); if(!r.ok) throw new Error(j.error?.message || r.statusText);
+  return j.id;
 }
 
-
-exports.handler = async (event)=>{
-  if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' };
+exports.handler = async (event) => {
   try{
+    if(event.httpMethod!=='POST') return json(405,{error:'Method Not Allowed'});
     const auth = event.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-    if (!token) return { statusCode: 401, body: JSON.stringify({ error:'Missing Bearer token (drive.file)' }) };
+    const token = auth.replace(/^Bearer\s+/i,'').trim();
+    if(!token) return json(401,{error:'Missing Google token'});
+    const { destFolderId, fileName, mimeType, dataBase64, options={} } = JSON.parse(event.body||'{}');
+    if(!destFolderId || !fileName || !dataBase64) return json(400,{error:'Missing inputs'});
 
-    const { destFolderId, fileName, mimeType, dataBase64, options={} } = JSON.parse(event.body || '{}');
-    if (!destFolderId || !fileName || !dataBase64) return { statusCode: 400, body: JSON.stringify({ error:'Missing destFolderId/fileName/dataBase64' }) };
-
+    const { asGDoc=false } = options;
     const buf = b64ToBuffer(dataBase64);
-    const baseName = fileName.replace(/\.[^/.]+$/, '');
 
-    // ensure subfolders
-    const textFolderId = await ensureChildFolder(token, destFolderId, 'text');
-    const sourceFolderId = options.saveOriginal ? await ensureChildFolder(token, destFolderId, 'source') : null;
+    // 1) upload (originál nebo rovnou převod na Google Doc)
+    const convertible = /(\.docx?$|\.pdf)$/i.test(fileName) || /pdf|word/.test(mimeType||'');
+    const asGoogleDoc = !!(asGDoc && convertible);
 
-    // convert to text
-    let text = await readFileText(buf, mimeType, fileName);
-    if (!text || !text.trim()) {
-      if (options.useOCR) {
-        // Placeholder pro OCR (zatím neaktivní)
-        // text = await ocrFallback(buf, mimeType);
-        return { statusCode: 501, body: JSON.stringify({ error:'OCR fallback není zapnutý v této verzi' }) };
-      }
-      return { statusCode: 400, body: JSON.stringify({ error:'Nepodařilo se získat text z souboru' }) };
+    const uploaded = await driveCreateMultipart(
+      token, destFolderId, fileName, mimeType || 'application/octet-stream', buf, asGoogleDoc
+    );
+    let textFileId = null;
+
+    // 2) pokud je to Google Doc → export do textu a ulož .txt do cílové složky
+    if (uploaded.mimeType === 'application/vnd.google-apps.document') {
+      const txt = await driveDownloadTextFromGDoc(token, uploaded.id);
+      const txtName = fileName.replace(/\.[^.]+$/,'') + '.txt';
+      textFileId = await driveCreateTextFile(token, destFolderId, txtName, txt);
     }
 
-    // hash
-    const sha256 = crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+    // 3) manifest.jsonl (create vs update; u update bez parents!)
+    const manifestName = 'manifest.jsonl';
+    const existing = await driveSearch(token, destFolderId, manifestName);
+    const line = JSON.stringify({
+      fileId: uploaded.id,
+      name: uploaded.name,
+      mimeType: uploaded.mimeType,
+      textFileId: textFileId || null,
+      ts: Date.now()
+    }) + '\n';
 
-    // save text
-    const out = await uploadText(token, textFolderId, baseName, text, !!options.asGDoc);
-
-    // save original (optional)
-    let originalId = null;
-    if (options.saveOriginal) {
-      const org = await uploadOriginal(token, sourceFolderId, fileName, mimeType, buf);
-      originalId = org.id;
+    if (existing) {
+      const url = `https://www.googleapis.com/drive/v3/files/${existing.id}?alt=media&supportsAllDrives=true`;
+      const cur = await fetch(url, { headers:{Authorization:`Bearer ${token}`}});
+      const prev = cur.ok ? await cur.text() : '';
+      await driveUpdateMedia(token, existing.id, prev + line, 'application/json');
+    } else {
+      await driveCreateTextFile(token, destFolderId, manifestName, line);
     }
 
-    // write manifest line
-    const line = {
-      createdAt: new Date().toISOString(),
-      originalName: fileName,
-      mimeType: mimeType || 'unknown',
-      outputId: out.id,
-      outputName: out.name,
-      saveOriginal: !!options.saveOriginal,
-      originalId,
-      sha256,
-      bytes: buf.length,
-      status: 'ok'
-    };
-    const manifestId = await writeManifestLine(token, destFolderId, line);
-
-    return { statusCode: 200, body: JSON.stringify({ ok:true, outputId: out.id, outputName: out.name, manifestId }) };
+    return json(200, { ok:true, outputName: uploaded.name, fileId: uploaded.id, textFileId });
   }catch(e){
-    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
+    console.error('[admin-upload-convert] ERROR', e);
+    return json(500, { error: e.message || String(e) });
   }
 };
