@@ -1,60 +1,118 @@
-// netlify/functions/rag-build-index-background.js
-const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
+// netlify/functions/rag-build-index.js
+// Projde texty v cílové složce, vyrobí embeddingy (batch), uloží index.jsonl.
 
-// —— helper: batch embeddings (místo 1 po druhém) ——
-const OPENAI_URL = 'https://api.openai.com/v1/embeddings';
-const MODEL = 'text-embedding-3-large'; // nebo tvůj
-async function embedBatch(inputs){
-  const r = await fetch(OPENAI_URL, {
-    method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':`Bearer ${OPENAI_API_KEY}`},
-    body: JSON.stringify({ model: MODEL, input: inputs })
-  });
-  const j = await r.json();
-  if(!r.ok) throw new Error(j.error?.message || `Embedding failed ${r.status}`);
-  return j.data.map(d=>d.embedding);
+const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
+const EMBEDDING_MODEL = 'text-embedding-3-small'; // rozumné náklady
+
+function json(status, body){ return { statusCode: status, headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }; }
+function chunkText(text, size=1500, overlap=200){
+  const out=[]; let i=0;
+  while(i<text.length){ const end=Math.min(text.length, i+size); out.push(text.slice(i,end)); if(end===text.length) break; i=end-overlap; }
+  return out;
 }
 
-exports.handler = async (event, context) => {
+async function driveListTextFiles(token, folderId){
+  const url = new URL('https://www.googleapis.com/drive/v3/files');
+  url.search = new URLSearchParams({
+    q: `'${folderId}' in parents and trashed = false`,
+    fields: 'files(id,name,mimeType,size)',
+    includeItemsFromAllDrives:'true', supportsAllDrives:'true', pageSize:'1000'
+  }).toString();
+  const r = await fetch(url, { headers:{Authorization:`Bearer ${token}`}});
+  const j = await r.json(); if(!r.ok) throw new Error(j.error?.message || r.statusText);
+  return (j.files||[]).filter(f => f.mimeType==='text/plain' || f.name.toLowerCase().endsWith('.txt') || f.mimeType==='application/vnd.google-apps.document');
+}
+async function driveDownloadText(token, file){
+  if(file.mimeType==='application/vnd.google-apps.document'){
+    const url=`https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=text/plain&supportsAllDrives=true`;
+    const r=await fetch(url,{headers:{Authorization:`Bearer ${token}`}}); if(!r.ok) throw new Error('Export failed'); return await r.text();
+  }
+  const url=`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media&supportsAllDrives=true`;
+  const r=await fetch(url,{headers:{Authorization:`Bearer ${token}`}}); if(!r.ok) throw new Error('Download failed'); return await r.text();
+}
+async function openaiEmbedBatch(inputs){
+  const r = await fetch('https://api.openai.com/v1/embeddings', {
+    method:'POST',
+    headers:{'Authorization':`Bearer ${OPENAI_API_KEY}`, 'Content-Type':'application/json'},
+    body: JSON.stringify({ model: EMBEDDING_MODEL, input: inputs })
+  });
+  const j = await r.json(); if(!r.ok) throw new Error(j.error?.message || r.statusText);
+  return j.data.map(d=>d.embedding);
+}
+async function driveSearch(token, folderId, name){
+  const url=new URL('https://www.googleapis.com/drive/v3/files');
+  url.search=new URLSearchParams({
+    q:`'${folderId}' in parents and name='${name.replace(/'/g,"\\'")}' and trashed=false`,
+    fields:'files(id,name)', pageSize:'1', includeItemsFromAllDrives:'true', supportsAllDrives:'true'
+  }).toString();
+  const r=await fetch(url,{headers:{Authorization:`Bearer ${token}`}}); const j=await r.json();
+  if(!r.ok) throw new Error(j.error?.message || r.statusText); return j.files?.[0] || null;
+}
+async function driveUpdateMedia(token, fileId, content){
+  const r=await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media&supportsAllDrives=true`,{
+    method:'PATCH', headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'}, body: content
+  }); if(!r.ok) throw new Error('Index update failed: '+(await r.text()));
+}
+async function driveCreateJsonFile(token, folderId, name, content){
+  const boundary='b-'+Math.random().toString(16).slice(2);
+  const meta={name, parents:[folderId], mimeType:'application/json'};
+  const head=`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n`+
+             `--${boundary}\r\nContent-Type: application/json\r\n\r\n`;
+  const tail=`\r\n--${boundary}--`;
+  const body=Buffer.concat([Buffer.from(head), Buffer.from(content,'utf8'), Buffer.from(tail)]);
+  const r=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true',{
+    method:'POST', headers:{Authorization:`Bearer ${token}`,'Content-Type':`multipart/related; boundary=${boundary}`}, body
+  });
+  const j=await r.json(); if(!r.ok) throw new Error(j.error?.message || r.statusText); return j.id;
+}
+
+exports.handler = async (event) => {
   try{
-    if (event.httpMethod !== 'POST') {
-      return { statusCode: 405, body: 'Method Not Allowed' };
-    }
-    if (!OPENAI_API_KEY) {
-      console.error('OPENAI_API_KEY missing');
-      return { statusCode: 500, body: JSON.stringify({ error: 'OPENAI_API_KEY is missing' }) };
-    }
+    if(event.httpMethod!=='POST') return json(405,{error:'Method Not Allowed'});
+    if(!OPENAI_API_KEY) return json(500,{error:'OPENAI_API_KEY is missing'});
     const auth = event.headers.authorization || '';
     const token = auth.replace(/^Bearer\s+/i,'').trim();
-    if (!token) return { statusCode: 401, body: JSON.stringify({ error: 'Missing Google token' }) };
+    if(!token) return json(401,{error:'Missing Google token'});
 
     const { folderId, chunkSize=1500, chunkOverlap=200 } = JSON.parse(event.body||'{}');
-    if (!folderId) return { statusCode: 400, body: JSON.stringify({ error: 'Missing folderId' }) };
+    if(!folderId) return json(400,{error:'Missing folderId'});
 
-    console.log('[build-bg] start', { folderId, chunkSize, chunkOverlap });
+    // 1) textové soubory
+    const files = await driveListTextFiles(token, folderId);
+    if(!files.length) return json(400,{error:'V cílové složce nejsou žádné .txt ani Google Docs.'});
 
-    // === tvá stávající logika čtení souborů z Drive + řezání textu ===
-    // … načti texty → ulož do pole `texts`
-    // Příklad logu:
-    // console.log('[build-bg] files:', files.length, 'chunks:', texts.length);
+    // 2) chunkování
+    const texts=[]; const LIMIT=5000;
+    for(const f of files){
+      try{
+        const t = await driveDownloadText(token, f);
+        const ch = chunkText(t, chunkSize, chunkOverlap).map((c,i)=>({text:c,file:f.name,fileId:f.id,ref:`${f.name}#${i+1}`}));
+        texts.push(...ch); if(texts.length>LIMIT) break;
+      }catch(e){ console.warn('[build] skip', f.name, e.message); }
+    }
+    if(!texts.length) return json(400,{error:'Nepodařilo se získat žádné textové chunky.'});
 
-    // === embeddings ve dávkách ===
-    const texts = globalThis.__TEXTS__ || []; // TODO: nahraď svým zdrojem
-    const BATCH = 64;
-    const vectors = [];
-    for (let i=0; i<texts.length; i+=BATCH){
-      const embs = await embedBatch(texts.slice(i,i+BATCH));
-      vectors.push(...embs);
+    // 3) embeddings po dávkách
+    const BATCH=64, lines=[];
+    for(let i=0;i<texts.length;i+=BATCH){
+      const batch = texts.slice(i,i+BATCH);
+      const vectors = await openaiEmbedBatch(batch.map(b=>b.text));
+      for(let j=0;j<vectors.length;j++){
+        const c=batch[j];
+        lines.push(JSON.stringify({ embedding:vectors[j], file:c.file, fileId:c.fileId, ref:c.ref })+'\n');
+      }
     }
 
-    // === ulož index zpět do Drive ===
-    // … tvůj existující kód pro zápis indexu (např. index.jsonl) …
+    // 4) zapiš index.jsonl (create vs update)
+    const name='index.jsonl';
+    const existing = await driveSearch(token, folderId, name);
+    const content = lines.join('');
+    if(existing) await driveUpdateMedia(token, existing.id, content);
+    else await driveCreateJsonFile(token, folderId, name, content);
 
-    console.log('[build-bg] done', { chunks: vectors.length });
-    // Background funkce může vrátit 202, UI si může jen zapsat „odstartováno“
-    return { statusCode: 202, body: JSON.stringify({ message:'Index build started (background)', chunks: vectors.length }) };
+    return json(200,{ ok:true, chunks:texts.length });
   }catch(e){
-    console.error('[build-bg] ERROR', e);
-    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
+    console.error('[rag-build-index] ERROR', e);
+    return json(500,{ error:e.message || String(e) });
   }
 };
