@@ -12,5 +12,5 @@ window.APP_CONFIG = {
 // shim pro admin – převod APP_CONFIG -> CONFIG
 window.CONFIG = {
   GOOGLE_CLIENT_ID: window.APP_CONFIG.GOOGLE_CLIENT_ID,
-  GOOGLE_API_KEY: "SEM_VLOŽ_TVŮJ_PICKER_API_KEY"
+  GOOGLE_API_KEY: "AIzaSyD8woz9VV8vpSfzoqpu6dlEUFznPFgqQoE"
 };
