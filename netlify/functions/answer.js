@@ -1,3 +1,32 @@
+const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
+
+function badEnv(msg) {
+  return { statusCode: 500, body: JSON.stringify({ error: msg }) };
+}
+
+exports.handler = async (event) => {
+  if (!OPENAI_API_KEY) {
+    return badEnv('OPENAI_API_KEY is missing on the server. Set it in Netlify → Environment variables and redeploy.');
+  }
+
+  // … zbytek tvého kódu …
+
+  // PŘI VOLÁNÍ OPENAI:
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini', // nebo tvůj model
+      messages: [{ role: 'user', content: question }]
+    })
+  });
+
+  // … zbytek zpracování …
+};
+
 export default async (req, context) => {
   try {
     if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
