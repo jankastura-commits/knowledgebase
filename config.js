@@ -6,4 +6,11 @@ window.APP_CONFIG = {
   INGEST_URL_ENDPOINT: "/.netlify/functions/ingest",
   TRANSCRIBE_ENDPOINT: "/.netlify/functions/transcribe",
   EXTRACT_PDF_ENDPOINT: "/.netlify/functions/extract-pdf"
+  
+};
+
+// shim pro admin – převod APP_CONFIG -> CONFIG
+window.CONFIG = {
+  GOOGLE_CLIENT_ID: window.APP_CONFIG.GOOGLE_CLIENT_ID,
+  GOOGLE_API_KEY: "SEM_VLOŽ_TVŮJ_PICKER_API_KEY"
 };
