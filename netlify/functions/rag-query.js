@@ -3,6 +3,9 @@ const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
 const EMB_MODEL = 'text-embedding-3-small';
 const CHAT_MODEL = 'gpt-4o-mini';
 
+// Celkový rozpočet znaků pro kontext posílaný do modelu (lze změnit přes env RAG_CONTEXT_BUDGET)
+const CONTEXT_BUDGET = parseInt(process.env.RAG_CONTEXT_BUDGET || '16000', 10);
+
 function json(status, body){ return { statusCode: status, headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }; }
 
 async function driveFindFileByName(token, folderId, name){
@@ -32,17 +35,32 @@ async function embed(input){
   return j.data[0].embedding;
 }
 function cosine(a,b){ let dot=0,na=0,nb=0; for(let i=0;i<a.length;i++){dot+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i];} return dot/(Math.sqrt(na)*Math.sqrt(nb)||1); }
-async function chatAnswer(question, snippets, citations){
-  const context = snippets.map((s,i)=>`[${i+1}] (${citations[i].file} • ${citations[i].ref})\n${s}`).join('\n\n');
+
+// „rozpočet“ kontextu: ber úryvky, dokud se vejdeme do limitu znaků
+function takeWithBudget(scoredRows, budget=CONTEXT_BUDGET){
+  const chosen=[]; let used=0;
+  for(const r of scoredRows){
+    const s = (r.snippet || '').toString();
+    if(!s) continue;
+    const len = s.length + 200; // rezerva na metadata
+    if(used + len > budget) break;
+    chosen.push({snippet: s, file: r.file, ref: r.ref});
+    used += len;
+  }
+  return chosen;
+}
+
+async function chatAnswer(question, chosen){
+  const context = chosen.map((c,i)=>`[${i+1}] (${c.file} • ${c.ref})\n${c.snippet}`).join('\n\n');
   const messages = [
-    { role:'system', content:'Jsi užitečný asistent. Odpovídej česky a drž se poskytnutého kontextu. Když něco v kontextu není, řekni to.' },
-    { role:'user', content:`Otázka:\n${question}\n\nKontext:\n${context}\n\nOdpověz věcně a v bodech, pokud se to hodí.` }
+    { role:'system', content:'Jsi užitečný asistent. Odpovídej česky a drž se kontextu níže. Když něco v kontextu není, řekni to.' },
+    { role:'user', content:`Otázka:\n${question}\n\nKontext:\n${context}\n\nOdpověz věcně. Když se hodí, použij stručné odrážky.` }
   ];
   const r=await fetch('https://api.openai.com/v1/chat/completions',{
     method:'POST', headers:{Authorization:`Bearer ${OPENAI_API_KEY}`,'Content-Type':'application/json'},
     body: JSON.stringify({ model: CHAT_MODEL, messages, temperature: 0.2 })
   });
-  const j=await r.json(); if(!r.ok) throw new Error(j.error?.message || r.statusText);
+  const j=await r.json(); if(!r.ok) throw new Error(j.error?.message || j.error || r.statusText);
   return j.choices[0].message.content.trim();
 }
 
@@ -72,13 +90,15 @@ exports.handler = async (event)=>{
     const qvec = await embed(question);
     const scored = rows.map(r=>({ ...r, score: cosine(qvec, r.emb) }))
                        .sort((a,b)=>b.score-a.score)
-                       .slice(0, Math.max(1, Math.min(20, topK)));
+                       .slice(0, Math.max(1, Math.min(50, topK)));
 
-    const snippets = scored.map(r=>r.snippet || '').map(s => s.slice(0, 1200));
-    const cites = scored.map((r,i)=>({ ref:`${i+1}`, file:r.file }));
+    const chosen = takeWithBudget(scored, CONTEXT_BUDGET);
+    if(!chosen.length) return json(400,{error:'Kontext se nevešel do rozpočtu – zmenši Top-K nebo sniž RAG_SNIPPET_CHARS.'});
 
-    const answer = await chatAnswer(question, snippets, scored);
-    return json(200,{ answer, citations: cites });
+    const answer = await chatAnswer(question, chosen);
+    const citations = chosen.map((c,i)=>({ ref: String(i+1), file: c.file }));
+
+    return json(200,{ answer, citations });
   }catch(e){
     console.error('[rag-query] ERROR', e);
     return json(500,{ error:e.message || String(e) });
