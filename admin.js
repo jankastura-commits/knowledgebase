@@ -1,6 +1,11 @@
 // Admin JS with Upload & Ingest
 let tokenRead=null, tokenWrite=null, srcFolder=null, dstFolder=null;
 
+function ensureReady(){
+  if (!window.CONFIG) { alert('Config se ještě nenačetl. Zkus to za vteřinu.'); return false; }
+  return true;
+}
+
 function connectRead(){
   const c = google.accounts.oauth2.initTokenClient({
     client_id: CONFIG.GOOGLE_CLIENT_ID,
