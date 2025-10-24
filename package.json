@@ -1,0 +1,10 @@
+{
+  "name": "fin-chat-lightplus-pdf",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "node-fetch": "^3.3.2",
+    "pdf-parse": "^1.1.1"
+  }
+}

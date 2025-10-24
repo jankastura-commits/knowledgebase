@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>FIN Chat Light+ (PDF)</title>
+  <link rel="stylesheet" href="styles.css"/>
+  <script defer src="config.js"></script>
+  <script defer src="app.js"></script>
+  <script async src="https://accounts.google.com/gsi/client"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="dot"></"></div>
+      <span>FIN Chat <strong>Light+ (PDF)</strong></span>
+    </div>
+    <div class="actions">
+      <button id="signinBtn" class="btn primary">Přihlásit k&nbsp;Drive</button>
+      <button id="refreshBtn" class="btn">Obnovit</button>
+      <a class="btn ghost" href="README.html" target="_blank">Nápověda</a>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="pane sources">
+      <h2>Zdrojové soubory</h2>
+      <div class="folder line">
+        <label>Google Drive složka:</label>
+        <code id="folderIdCode"></code>
+      </div>
+      <div class="filters">
+        <input id="searchInput" type="search" placeholder="Filtrovat podle názvu…"/>
+        <select id="mimeFilter">
+          <option value="">Všechny typy</option>
+          <option value="application/vnd.google-apps.document">Google Docs</option>
+          <option value="text/plain">Text</option>
+          <option value="text/markdown">Markdown</option>
+          <option value="application/json">JSON</option>
+          <option value="application/pdf">PDF</option>
+        </select>
+      </div>
+      <ul id="fileList" class="file-list"></ul>
+      <hr class="sep"/>
+      <h3>Externí odkazy</h3>
+      <div class="url-add">
+        <input id="urlInput" type="url" placeholder="Vložte odkaz na článek / webinář / podcast…"/>
+        <button id="addUrlBtn" class="btn">Přidat odkaz</button>
+      </div>
+      <ul id="urlList" class="file-list"></ul>
+      <div class="note">Webové stránky se stahují na serveru a extrahuje se hlavní text. PDF z Drive se převádí na text serverem.</div>
+      <hr class="sep"/>
+      <h3>Audio z Drive → Přepis</h3>
+      <div class="line">
+        <input id="driveFileId" placeholder="Vložte Drive File ID (mp3/mp4/m4a)"/>
+        <button id="transcribeBtn" class="btn">Přepsat audio</button>
+      </div>
+      <div class="note">Přepis probíhá přes OpenAI Whisper na serveru. Přístup ke zvuku se provede vaším Drive tokenem.</div>
+    </aside>
+
+    <section class="pane chat">
+      <div id="messages" class="messages"></div>
+      <form id="chatForm" class="chatbar">
+        <input id="question" type="text" placeholder="Zeptejte se na obsah dokumentů, PDF a odkazů…" required/>
+        <button class="btn primary" type="submit">Odeslat</button>
+      </form>
+    </section>
+
+    <aside class="pane details">
+      <h2>Citace</h2>
+      <div id="citations" class="citations"></div>
+      <h3>Stav</h3>
+      <pre id="status" class="status"></pre>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <small>MVP demo. Data zůstávají ve vašem Google Drive; PDF/URL/audio se zpracují jen pro odpověď. Odpovědi generuje model přes Netlify Function s vaším API klíčem.</small>
+  </footer>
+</body>
+</html>
