@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin – Upload & Ingest (Drive + RAG)</title>
+  <meta name="robots" content="noindex,nofollow" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color: #0a0a0a; }
+    .card { border: 1px solid #eee; border-radius: 12px; padding: 16px; margin: 16px 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+    button { padding: 8px 12px; border-radius: 10px; border: 1px solid #ddd; background:#fafafa; cursor:pointer; }
+    button:hover { background:#f0f0f0; }
+    h3 { margin-top: 0; }
+    textarea { font: inherit; }
+    input[type=number] { padding: 4px 6px; border-radius: 8px; border: 1px solid #ddd; }
+    pre { background: #fcfcfc; border: 1px solid #eee; border-radius: 8px; padding: 8px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center }
+  </style>
+</head>
+<body>
+  <h1>Admin: Upload & Ingest → Text & Index</h1>
+  <p>Vyplň <code>config.js</code> a připoj Google účet (read/write). Tato stránka může běžet vedle hlavní appky.</p>
+
+  <script src="config.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer></script>
+
+  <section class="card" id="drive-connect">
+    <h3>1) Připojit Google Drive & vybrat složky</h3>
+    <div class="row">
+      <button onclick="connectRead()">Připojit (read)</button>
+      <button onclick="connectWrite()">Připojit (write)</button>
+      <button onclick="pickSource()">Vybrat <b>zdrojovou</b> složku (pro čtení)</button>
+      <button onclick="pickDest()">Vybrat <b>cílovou</b> složku (dataset)</button>
+    </div>
+    <p><b>Zdroj:</b> <span id="srcLbl">—</span> &nbsp; | &nbsp; <b>Cíl:</b> <span id="dstLbl">—</span></p>
+  </section>
+
+  <section class="card" id="upload-admin">
+    <h3>2) Nahrát libovolné soubory (admin je převede na text)</h3>
+    <div class="row">
+      <input id="filePick" type="file" multiple />
+      <label><input type="checkbox" id="saveOriginal" checked> uložit originály do <code>/source</code></label>
+      <label><input type="checkbox" id="asGDoc"> uložit text jako Google Doc (jinak .txt)</label>
+      <label title="OCR pro skeny PDF je volitelný doplněk"><input type="checkbox" id="useOCR" disabled> OCR fallback (volitelný doplněk)</label>
+    </div>
+    <div id="uploadList" style="border:1px solid #eee;border-radius:8px;padding:8px;max-height:220px;overflow:auto;margin-top:8px">—</div>
+    <div class="row" style="margin-top:8px">
+      <button onclick="startUploadConvert()">Nahrát & převést</button>
+    </div>
+    <pre id="uploadLog" style="white-space:pre-wrap;max-height:220px;overflow:auto;margin-top:8px"></pre>
+  </section>
+
+  <section class="card" id="index-admin">
+    <h3>3) Postavit/aktualizovat index</h3>
+    <div class="row">
+      <button onclick="buildIndex()">Postavit/aktualizovat index</button>
+      <label>chunk: <input id="chunkSize" type="number" value="1500" style="width:80px">, overlap: <input id="chunkOverlap" type="number" value="200" style="width:80px"></label>
+    </div>
+    <pre id="indexLog" style="white-space:pre-wrap;max-height:160px;overflow:auto"></pre>
+  </section>
+
+  <section class="card" id="rag-chat">
+    <h3>4) Dotazovat vybranou složku (RAG)</h3>
+    <textarea id="q" placeholder="Zeptej se…" style="width:100%;min-height:80px"></textarea>
+    <div class="row" style="margin-top:6px">
+      <button onclick="ask()">Zeptej se</button>
+      <input id="topK" type="number" value="6" style="width:60px">
+    </div>
+    <div id="ans" style="margin-top:8px; white-space:pre-wrap"></div>
+  </section>
+
+  <script src="admin.js"></script>
+</body>
+</html>
