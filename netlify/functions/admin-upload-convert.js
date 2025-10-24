@@ -105,7 +105,7 @@ async function getFile(token, fileId){
 }
 
 async function writeManifestLine(token, datasetFolderId, lineObj){
-  // find or create manifest.jsonl
+  // find manifest.jsonl
   const listURL = new URL('https://www.googleapis.com/drive/v3/files');
   listURL.search = new URLSearchParams({
     q: `'${datasetFolderId}' in parents and name = 'manifest.jsonl' and trashed = false`,
@@ -117,37 +117,35 @@ async function writeManifestLine(token, datasetFolderId, lineObj){
   const H = { Authorization: `Bearer ${token}` };
   const r = await fetch(listURL, { headers: H });
   const j = await r.json();
-  let id = j.files && j.files[0] && j.files[0].id;
-
+  const found = j.files && j.files[0];
   const newLine = JSON.stringify(lineObj) + "\n";
-  let content = newLine;
-  if (id){
-    // read previous and append
-    try{
-      const old = await getFile(token, id);
-      content = old + newLine;
-    }catch{ /* ignore */ }
-    // update (PATCH multipart)
-    const boundary = 'b-' + Math.random().toString(16).slice(2);
-    const metadata = { name: 'manifest.jsonl', parents:[datasetFolderId], mimeType:'application/json' };
-    const head = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`+
-                 `--${boundary}\r\nContent-Type: application/json\r\n\r\n`;
-    const tail = `\r\n--${boundary}--`;
-    const body = Buffer.concat([Buffer.from(head), Buffer.from(content,'utf8'), Buffer.from(tail)]);
-    const up = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=multipart&supportsAllDrives=true`, {
-      method:'PATCH', headers:{ Authorization:`Bearer ${token}`, 'Content-Type':`multipart/related; boundary=${boundary}` }, body
+
+  if (found) {
+    // ---- UPDATE OBSAHU (bez parents!) ----
+    // stáhni dosavadní obsah
+    const oldResp = await fetch(`https://www.googleapis.com/drive/v3/files/${found.id}?alt=media`, { headers: H });
+    const oldText = oldResp.ok ? await oldResp.text() : '';
+    const content = oldText + newLine;
+
+    // nejjednodušší update: uploadType=media (PATCH) – mění jen obsah
+    const up = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${found.id}?uploadType=media&supportsAllDrives=true`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: content
     });
-    const uj = await up.json();
-    if (!up.ok) throw new Error(uj.error?.message || 'Manifest update failed');
-    return uj.id;
+    if (!up.ok) {
+      const uj = await up.text();
+      throw new Error(`Manifest update failed: ${uj}`);
+    }
+    return found.id;
   } else {
-    // create
+    // ---- CREATE (tady parents být MUSÍ) ----
     const boundary = 'b-' + Math.random().toString(16).slice(2);
     const metadata = { name: 'manifest.jsonl', parents:[datasetFolderId], mimeType:'application/json' };
     const head = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`+
                  `--${boundary}\r\nContent-Type: application/json\r\n\r\n`;
     const tail = `\r\n--${boundary}--`;
-    const body = Buffer.concat([Buffer.from(head), Buffer.from(content,'utf8'), Buffer.from(tail)]);
+    const body = Buffer.concat([Buffer.from(head), Buffer.from(newLine,'utf8'), Buffer.from(tail)]);
     const up = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true', {
       method:'POST', headers:{ Authorization:`Bearer ${token}`, 'Content-Type':`multipart/related; boundary=${boundary}` }, body
     });
@@ -156,6 +154,7 @@ async function writeManifestLine(token, datasetFolderId, lineObj){
     return uj.id;
   }
 }
+
 
 exports.handler = async (event)=>{
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' };
