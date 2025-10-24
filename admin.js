@@ -152,3 +152,106 @@ window.pickDest = pickDest;
 window.startUploadConvert = startUploadConvert;
 window.buildIndex = buildIndex;
 window.ask = ask;
+
+// === PATCH: robustní připojení + výběr složek ===
+let tokenRead = window.tokenRead || null;
+let tokenWrite = window.tokenWrite || null;
+let srcFolder = window.srcFolder || null;
+let dstFolder = window.dstFolder || null;
+
+function __ensureReady() {
+  if (!window.CONFIG) { alert('Config se ještě nenačetl (window.CONFIG = undefined).'); return false; }
+  if (!CONFIG.GOOGLE_CLIENT_ID) { alert('Chybí GOOGLE_CLIENT_ID (Netlify env).'); return false; }
+  if (!CONFIG.GOOGLE_API_KEY) { alert('Chybí GOOGLE_API_KEY (Netlify env).'); return false; }
+  return true;
+}
+async function __waitForGIS(maxMs = 6000) {
+  const t0 = Date.now();
+  return new Promise((res, rej) => {
+    (function tick() {
+      if (window.google && google.accounts && google.accounts.oauth2) return res();
+      if (Date.now() - t0 > maxMs) return rej(new Error('Google skript (GIS) se nenačetl.'));
+      setTimeout(tick, 120);
+    })();
+  });
+}
+function __openFolderPicker(token, onPick) {
+  gapi.load('picker', () => {
+    const view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+      .setIncludeFolders(true).setSelectFolderEnabled(true);
+    const picker = new google.picker.PickerBuilder()
+      .setTitle('Vyber složku')
+      .addView(view)
+      .setOAuthToken(token)
+      .setDeveloperKey(CONFIG.GOOGLE_API_KEY)
+      .setCallback((data) => {
+        if (data.action === google.picker.Action.PICKED) {
+          const d = data.docs[0];
+          onPick({ id: d.id, name: d.name });
+        }
+      })
+      .build();
+    picker.setVisible(true);
+  });
+}
+
+async function connectRead() {
+  try {
+    if (!__ensureReady()) return;
+    await __waitForGIS();
+    const client = google.accounts.oauth2.initTokenClient({
+      client_id: CONFIG.GOOGLE_CLIENT_ID,
+      scope: 'https://www.googleapis.com/auth/drive.readonly',
+      prompt: 'consent',
+      callback: (resp) => {
+        if (!resp?.access_token) return alert('Nepřišel access_token (read).');
+        tokenRead = resp.access_token;
+        alert('Připojeno (read)');
+      }
+    });
+    client.requestAccessToken();
+  } catch (e) { alert('Chyba READ: ' + e.message); }
+}
+
+async function connectWrite() {
+  try {
+    if (!__ensureReady()) return;
+    await __waitForGIS();
+    const client = google.accounts.oauth2.initTokenClient({
+      client_id: CONFIG.GOOGLE_CLIENT_ID,
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      prompt: 'consent',
+      callback: (resp) => {
+        if (!resp?.access_token) return alert('Nepřišel access_token (write).');
+        tokenWrite = resp.access_token;
+        alert('Připojeno (write)');
+      }
+    });
+    client.requestAccessToken();
+  } catch (e) { alert('Chyba WRITE: ' + e.message); }
+}
+
+function pickSource() {
+  if (!tokenRead) return alert('Nejdřív klikni na „Připojit (read)“.');
+  __openFolderPicker(tokenRead, (f) => {
+    srcFolder = f;
+    const el = document.getElementById('srcLbl');
+    if (el) el.textContent = `${f.name} (${f.id})`;
+  });
+}
+
+function pickDest() {
+  if (!tokenRead) return alert('Nejdřív klikni na „Připojit (read)“.');
+  __openFolderPicker(tokenRead, (f) => {
+    dstFolder = f;
+    const el = document.getElementById('dstLbl');
+    if (el) el.textContent = `${f.name} (${f.id})`;
+  });
+}
+
+window.connectRead = connectRead;
+window.connectWrite = connectWrite;
+window.pickSource = pickSource;
+window.pickDest = pickDest;
+// === /PATCH ===
+
