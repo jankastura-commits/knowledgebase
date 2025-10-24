@@ -5,7 +5,12 @@ const EMBEDDING_MODEL = 'text-embedding-3-small';
 function json(status, body){ return { statusCode: status, headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }; }
 function chunkText(text, size=1500, overlap=200){
   const out=[]; let i=0;
-  while(i<text.length){ const end=Math.min(text.length, i+size); out.push(text.slice(i,end)); if(end===text.length) break; i=end-overlap; }
+  while(i<text.length){
+    const end=Math.min(text.length, i+size);
+    out.push(text.slice(i,end));
+    if(end===text.length) break;
+    i=end-overlap;
+  }
   return out;
 }
 
@@ -18,7 +23,11 @@ async function driveListTextFiles(token, folderId){
   }).toString();
   const r=await fetch(url,{headers:{Authorization:`Bearer ${token}`}});
   const j=await r.json(); if(!r.ok) throw new Error(j.error?.message || r.statusText);
-  return (j.files||[]).filter(f => f.mimeType==='text/plain' || f.name.toLowerCase().endsWith('.txt') || f.mimeType==='application/vnd.google-apps.document');
+  return (j.files||[]).filter(f =>
+    f.mimeType==='text/plain' ||
+    f.name.toLowerCase().endsWith('.txt') ||
+    f.mimeType==='application/vnd.google-apps.document'
+  );
 }
 async function driveDownloadText(token, file){
   if(file.mimeType==='application/vnd.google-apps.document'){
@@ -67,15 +76,11 @@ async function driveCreateJsonFile(token, folderId, name, content){
 exports.handler = async (event) => {
   try{
     if(event.httpMethod!=='POST') return json(405,{error:'Method Not Allowed'});
-    if(!(process.env.OPENAI_API_KEY||'').trim()) return json(500,{error:'OPENAI_API_KEY is missing'});
+    if(!OPENAI_API_KEY) return json(500,{error:'OPENAI_API_KEY is missing'});
 
-    // — robustní čtení Authorization —
     const h = event.headers || {};
     const auth = h.authorization || h.Authorization || h['x-authorization'] || '';
     const token = (auth || '').replace(/^Bearer\s+/i,'').trim();
-
-    console.log('[build] got auth header?', !!auth, 'tokenLen:', token.length);
-
     if(!token) return json(401,{error:'Missing Google token (Authorization: Bearer <access_token>)'});
 
     const { folderId, chunkSize=1500, chunkOverlap=200 } = JSON.parse(event.body||'{}');
@@ -84,33 +89,43 @@ exports.handler = async (event) => {
     const files = await driveListTextFiles(token, folderId);
     if(!files.length) return json(400,{error:'V cílové složce nejsou žádné .txt ani Google Docs.'});
 
-    const texts=[]; const LIMIT=5000;
+    const chunks=[]; const MAX_CHUNKS=5000;
     for(const f of files){
       try{
-        const t = await driveDownloadText(token, f);
-        const ch = chunkText(t, chunkSize, chunkOverlap).map((c,i)=>({text:c,file:f.name,fileId:f.id,ref:`${f.name}#${i+1}`}));
-        texts.push(...ch); if(texts.length>LIMIT) break;
+        const txt = await driveDownloadText(token, f);
+        const parts = chunkText(txt, chunkSize, chunkOverlap);
+        parts.forEach((t,i)=>{
+          chunks.push({ text:t, file:f.name, fileId:f.id, ref:`${f.name}#${i+1}` });
+        });
+        if(chunks.length>MAX_CHUNKS) break;
       }catch(e){ console.warn('[build] skip', f.name, e.message); }
     }
-    if(!texts.length) return json(400,{error:'Nepodařilo se získat žádné textové chunky.'});
+    if(!chunks.length) return json(400,{error:'Nepodařilo se získat žádné textové chunky.'});
 
     const BATCH=64, lines=[];
-    for(let i=0;i<texts.length;i+=BATCH){
-      const batch=texts.slice(i,i+BATCH);
+    for(let i=0;i<chunks.length;i+=BATCH){
+      const batch=chunks.slice(i,i+BATCH);
       const vectors=await openaiEmbedBatch(batch.map(b=>b.text));
       for(let j=0;j<vectors.length;j++){
         const c=batch[j];
-        lines.push(JSON.stringify({ embedding:vectors[j], file:c.file, fileId:c.fileId, ref:c.ref })+'\n');
+        const snippet = c.text.replace(/\s+/g,' ').trim().slice(0, 800);
+        lines.push(JSON.stringify({
+          embedding: vectors[j],
+          file: c.file,
+          fileId: c.fileId,
+          ref: c.ref,
+          snippet
+        })+'\n');
       }
     }
 
     const name='index.jsonl';
-    const existing = await driveSearch(token, folderId, name);
     const content = lines.join('');
+    const existing = await driveSearch(token, folderId, name);
     if(existing) await driveUpdateMedia(token, existing.id, content);
     else await driveCreateJsonFile(token, folderId, name, content);
 
-    return json(200,{ ok:true, chunks:texts.length });
+    return json(200,{ ok:true, chunks:chunks.length });
   }catch(e){
     console.error('[rag-build-index] ERROR', e);
     return json(500,{ error:e.message || String(e) });
