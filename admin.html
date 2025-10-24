@@ -6,11 +6,20 @@
   <title>Admin – připojení k Google Drive</title>
   <meta name="robots" content="noindex,nofollow" />
   <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:24px}
-    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    :root{--gap:12px}
+    body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:24px;line-height:1.45}
+    h1{margin:0 0 16px}
+    h2{margin:24px 0 8px}
+    .row{display:flex;gap:var(--gap);flex-wrap:wrap;align-items:center}
+    .card{border:1px solid #e5e5e5;border-radius:12px;padding:16px;margin-top:16px}
     button{padding:8px 12px;border-radius:10px;border:1px solid #ddd;background:#fafafa;cursor:pointer}
     button[disabled]{opacity:.6;cursor:not-allowed}
+    input[type="text"],input[type="number"]{padding:8px 10px;border:1px solid #ddd;border-radius:8px;min-width:260px}
+    .muted{color:#666}
+    pre{background:#fafafa;border:1px solid #eee;border-radius:10px;padding:12px;white-space:pre-wrap}
     #status{font-size:14px;color:#555;margin-top:8px}
+    .cols{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap)}
+    @media (max-width:900px){.cols{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -24,26 +33,70 @@
   </div>
 
   <p><b>Zdroj:</b> <span id="srcLbl">—</span> &nbsp; | &nbsp; <b>Cíl:</b> <span id="dstLbl">—</span></p>
-  <div id="status">Inicializuji…</div>
+  <div id="status" class="muted">Inicializuji…</div>
 
-  <!-- 1) Načtení konfigurace z Netlify env -->
+  <!-- Sekce: Upload & převod -->
+  <div class="card">
+    <h2>1) Nahrát soubory a převést do datasetu</h2>
+    <div class="row">
+      <input id="filePick" type="file" multiple />
+      <label><input type="checkbox" id="saveOriginal" checked /> uložit originál</label>
+      <label><input type="checkbox" id="asGDoc" /> převádět DOCX/PDF do Google Doc</label>
+      <label class="muted"><input type="checkbox" id="useOCR" disabled /> OCR (zatím vypnuto)</label>
+      <button onclick="startUploadConvert()">Nahrát & převést</button>
+    </div>
+    <div class="cols">
+      <div>
+        <div class="muted" style="margin-top:8px">Vybrané soubory:</div>
+        <pre id="uploadList">—</pre>
+      </div>
+      <div>
+        <div class="muted" style="margin-top:8px">Průběh:</div>
+        <pre id="uploadLog">—</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sekce: Stavba indexu -->
+  <div class="card">
+    <h2>2) Postavit / aktualizovat index</h2>
+    <div class="row">
+      <label>Chunk size: <input id="chunkSize" type="number" value="1500" min="200" step="100" /></label>
+      <label>Overlap: <input id="chunkOverlap" type="number" value="200" min="0" step="50" /></label>
+      <button onclick="buildIndex()">Postavit/aktualizovat index</button>
+    </div>
+    <pre id="indexLog" class="muted">—</pre>
+  </div>
+
+  <!-- Sekce: Dotazování -->
+  <div class="card">
+    <h2>3) Položit dotaz nad indexem</h2>
+    <div class="row">
+      <input id="q" type="text" placeholder="Zeptej se…" />
+      <label>Top-K: <input id="topK" type="number" value="6" min="1" max="20" /></label>
+      <button onclick="ask()">Zeptej se</button>
+    </div>
+    <pre id="ans" class="muted">—</pre>
+  </div>
+
+  <!-- 1) načti config z Netlify env -->
   <script>
     window.CONFIG = null;
-    async function loadConfig() {
-      const r = await fetch('/.netlify/functions/public-config', { cache: 'no-store' });
-      if (!r.ok) throw new Error('public-config HTTP ' + r.status);
+    async function loadConfig(){
+      const r = await fetch('/.netlify/functions/public-config', {cache:'no-store'});
+      if(!r.ok) throw new Error('public-config HTTP '+r.status);
       window.CONFIG = await r.json(); // { GOOGLE_CLIENT_ID, GOOGLE_API_KEY }
     }
   </script>
 
-  <!-- 2) Google skripty (musí být přesně takto) -->
+  <!-- 2) Google skripty -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://apis.google.com/js/api.js" async defer></script>
 
-  <!-- 3) Logika adminu -->
+  <!-- 3) logika adminu -->
   <script src="admin.js"></script>
 
-  <!-- 4) INIT: odemknout tlačítka až po načtení všeho -->
+  <!-- 4) INIT: odemkni tlačítka až po načtení všeho -->
   <script>
     async function waitFor(cond, timeoutMs = 10000) {
       const t0 = Date.now();
@@ -55,41 +108,18 @@
         })();
       });
     }
-
-    (async () => {
+    (async ()=>{
       const statusEl = document.getElementById('status');
-      try {
-        // 1) config
+      try{
         await loadConfig();
-
-        // 2) GIS (Google Identity Services)
-        await waitFor(() => !!(window.google && google.accounts && google.accounts.oauth2), 12000);
-
-        // 3) Google Picker (gapi)
-        await new Promise(res => gapi.load('picker', res));
-
-        // 4) vše ready → povol tlačítka
-        ['btnRead','btnWrite','btnSrc','btnDst'].forEach(id => {
-          const el = document.getElementById(id);
-          if (el) el.disabled = false;
-        });
-
+        await waitFor(()=>!!(window.google && google.accounts && google.accounts.oauth2), 12000);
+        await new Promise(r=>gapi.load('picker', r));
+        ['btnRead','btnWrite','btnSrc','btnDst'].forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled=false; });
         statusEl.textContent = 'Připraveno.';
-        console.log('[admin] Ready', {
-          hasConfig: !!window.CONFIG,
-          clientId: window.CONFIG?.GOOGLE_CLIENT_ID || null,
-          hasApiKey: !!window.CONFIG?.GOOGLE_API_KEY,
-          gisLoaded: !!(window.google && google.accounts && google.accounts.oauth2)
-        });
-      } catch (e) {
-        statusEl.textContent = 'Inicializace selhala. Zkontroluj public-config, Google skripty a povolené pop-upy/rozšíření.';
-        console.error('[admin] init error:', e);
-        alert(
-          'Inicializace se nepovedla.\n' +
-          '• Ověř, že /.netlify/functions/public-config vrací JSON s klíči.\n' +
-          '• Zkontroluj, že prohlížeč neblokuje skripty z accounts.google.com a apis.google.com.\n' +
-          '• V OAuth klientovi musí být origin https://knowledgebaselab.netlify.app.'
-        );
+      }catch(e){
+        statusEl.textContent = 'Inicializace selhala – zkontroluj public-config a Google skripty / rozšíření.';
+        console.error(e);
+        alert('Inicializace se nepovedla. Zkontroluj prosím:\n• /.netlify/functions/public-config vrací klíče\n• Nejsou blokované skripty z accounts.google.com / apis.google.com\n• OAuth origin je https://knowledgebaselab.netlify.app');
       }
     })();
   </script>
