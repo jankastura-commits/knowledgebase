@@ -202,31 +202,52 @@ async function startIngestFromSource() {
   }
 }
 
-// Build index (lepší logy + timeout)
+// === buildIndex (posílá Authorization + vypíše token do konzole) ===
 async function buildIndex(){
   if(!dstFolder)  return alert('Vyber cílovou složku (tam se uloží index).');
   if(!tokenWrite) return alert('Nejdřív „Připojit (write)“.');
 
-  const chunkSize    = parseInt(getEl('chunkSize')?.value || '1500', 10);
-  const chunkOverlap = parseInt(getEl('chunkOverlap')?.value || '200', 10);
-  const log = getEl('indexLog'); log && (log.textContent = 'Stavím index…\n');
+  const chunkSize    = parseInt(document.getElementById('chunkSize')?.value || '1500', 10);
+  const chunkOverlap = parseInt(document.getElementById('chunkOverlap')?.value || '200', 10);
+  const log = document.getElementById('indexLog');
+  if (log) log.textContent = 'Stavím index…\n';
 
-  const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(), 60000);
+  // DEBUG: ukaž, že máme token
+  console.log('[buildIndex] tokenWrite length:', (tokenWrite||'').length);
+  console.log('[buildIndex] dstFolder.id:', dstFolder?.id);
+
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), 60000);
+
   try{
     const r = await fetch('/.netlify/functions/rag-build-index', {
       method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+tokenWrite},
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization':'Bearer ' + tokenWrite   // <<< TADY se posílá OAuth token
+      },
       body: JSON.stringify({ folderId: dstFolder.id, chunkSize, chunkOverlap }),
       signal: ctrl.signal
     });
     clearTimeout(t);
-    const j = await r.json().catch(()=> ({}));
-    if(!r.ok){ log && (log.textContent += 'Chyba: '+(j.error?.message || j.error || r.statusText)); return; }
-    log && (log.textContent += `✔ Index hotový (chunks: ${j.chunks}).`);
+
+    // vždy čti jako text a zkus JSON – ať se chyba nikdy "neschová"
+    const raw = await r.text();
+    let j=null; try{ j=JSON.parse(raw); } catch {}
+    if(!r.ok){
+      const msg = (j && (j.error?.message || j.error)) || raw || r.statusText || ('HTTP '+r.status);
+      log && (log.textContent += 'Chyba: ' + msg);
+      console.error('[buildIndex] ERROR', msg);
+      return;
+    }
+    const chunks = j?.chunks ?? '(neznámé)';
+    log && (log.textContent += `✔ Index hotový (chunks: ${chunks}).`);
   }catch(e){
     log && (log.textContent += `Chyba: ${e.name==='AbortError'?'časový limit vypršel':e.message}`);
+    console.error('[buildIndex] CATCH', e);
   }
 }
+
 
 // Dotazování
 async function ask(){
