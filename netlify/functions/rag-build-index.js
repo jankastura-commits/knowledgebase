@@ -2,14 +2,17 @@
 const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
 const EMBEDDING_MODEL = 'text-embedding-3-small';
 
+// Kolik znaků z každého chunku uložit do indexu jako snippet (lze změnit v Netlify env: RAG_SNIPPET_CHARS)
+const MAX_SNIPPET_CHARS = parseInt(process.env.RAG_SNIPPET_CHARS || '4000', 10);
+
 function json(status, body){ return { statusCode: status, headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) }; }
 function chunkText(text, size=1500, overlap=200){
   const out=[]; let i=0;
   while(i<text.length){
-    const end=Math.min(text.length, i+size);
-    out.push(text.slice(i,end));
-    if(end===text.length) break;
-    i=end-overlap;
+    const end = Math.min(text.length, i+size);
+    out.push(text.slice(i, end));
+    if (end === text.length) break;
+    i = end - overlap;
   }
   return out;
 }
@@ -106,9 +109,11 @@ exports.handler = async (event) => {
     for(let i=0;i<chunks.length;i+=BATCH){
       const batch=chunks.slice(i,i+BATCH);
       const vectors=await openaiEmbedBatch(batch.map(b=>b.text));
+
       for(let j=0;j<vectors.length;j++){
         const c=batch[j];
-        const snippet = c.text.replace(/\s+/g,' ').trim().slice(0, 800);
+        // dlooouhý snippet pro bohatší odpovědi
+        const snippet = c.text.replace(/\s+/g,' ').trim().slice(0, MAX_SNIPPET_CHARS);
         lines.push(JSON.stringify({
           embedding: vectors[j],
           file: c.file,
@@ -125,7 +130,7 @@ exports.handler = async (event) => {
     if(existing) await driveUpdateMedia(token, existing.id, content);
     else await driveCreateJsonFile(token, folderId, name, content);
 
-    return json(200,{ ok:true, chunks:chunks.length });
+    return json(200,{ ok:true, chunks:chunks.length, snippetChars: MAX_SNIPPET_CHARS });
   }catch(e){
     console.error('[rag-build-index] ERROR', e);
     return json(500,{ error:e.message || String(e) });
