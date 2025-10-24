@@ -165,18 +165,32 @@ async function buildIndex(){
   if(!dstFolder)  return alert('Vyber cílovou složku (tam se uloží index).');
   if(!tokenWrite) return alert('Nejdřív „Připojit (write)“.');
 
-  const chunkSize    = parseInt(getEl('chunkSize')?.value || '1500', 10);
-  const chunkOverlap = parseInt(getEl('chunkOverlap')?.value || '200', 10);
-  const log = getEl('indexLog'); if (log) log.textContent = 'Stavím index…\n';
+  const chunkSize    = parseInt(document.getElementById('chunkSize')?.value || '1500', 10);
+  const chunkOverlap = parseInt(document.getElementById('chunkOverlap')?.value || '200', 10);
+  const log = document.getElementById('indexLog');
+  if (log) log.textContent = 'Stavím index…\n';
 
-  const r = await fetch('/.netlify/functions/rag-build-index', {
-    method:'POST',
-    headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+tokenWrite },
-    body: JSON.stringify({ folderId: dstFolder.id, chunkSize, chunkOverlap })
-  });
-  const j = await r.json();
-  if(!r.ok){ log && (log.textContent += 'Chyba: ' + (j.error||r.statusText)); return; }
-  log && (log.textContent += `✔ Index hotový (chunks: ${j.chunks}).`);
+  // 60s timeout, ať UI nikdy nezůstane viset
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), 60000);
+
+  try{
+    const r = await fetch('/.netlify/functions/rag-build-index', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+tokenWrite},
+      body: JSON.stringify({ folderId: dstFolder.id, chunkSize, chunkOverlap }),
+      signal: ctrl.signal
+    });
+    clearTimeout(t);
+    const j = await r.json().catch(()=> ({}));
+    if(!r.ok){
+      log && (log.textContent += 'Chyba: '+(j.error?.message || j.error || r.statusText));
+      return;
+    }
+    log && (log.textContent += `✔ Index hotový (chunks: ${j.chunks}).`);
+  }catch(e){
+    log && (log.textContent += `Chyba: ${e.name==='AbortError'?'časový limit vypršel':' '+e.message}\nZkus znovu nebo použij background verzi (viz níže).`);
+  }
 }
 
 // --- Dotazování (rag-query) ---
