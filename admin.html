@@ -21,16 +21,7 @@
   <h1>Admin: Upload & Ingest → Text & Index</h1>
   <p>Vyplň <code>config.js</code> a připoj Google účet (read/write). Tato stránka může běžet vedle hlavní appky.</p>
 
-  <script>
-  window.CONFIG = null;
-  async function loadConfig() {
-    const r = await fetch('/.netlify/functions/public-config');
-    window.CONFIG = await r.json();
-  }
-  loadConfig();
-</script>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="https://apis.google.com/js/api.js" async defer></script>
+ 
 
 
   <section class="card" id="drive-connect">
@@ -78,6 +69,20 @@
     <div id="ans" style="margin-top:8px; white-space:pre-wrap"></div>
   </section>
 
-  <script src="admin.js"></script>
+   <script>
+  window.CONFIG = null;
+  (async () => {
+    const r = await fetch('/.netlify/functions/public-config');
+    window.CONFIG = await r.json(); // { GOOGLE_CLIENT_ID, GOOGLE_API_KEY }
+  })();
+</script>
+
+<!-- 2) Google skripty -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://apis.google.com/js/api.js" async defer></script>
+
+<!-- 3) vlastní logika adminu -->
+<script src="admin.js"></script>
+  
 </body>
 </html>
