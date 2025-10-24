@@ -1,88 +1,63 @@
 <!doctype html>
 <html lang="cs">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Admin – Upload & Ingest (Drive + RAG)</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Admin – Drive připojení</title>
   <meta name="robots" content="noindex,nofollow" />
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color: #0a0a0a; }
-    .card { border: 1px solid #eee; border-radius: 12px; padding: 16px; margin: 16px 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
-    button { padding: 8px 12px; border-radius: 10px; border: 1px solid #ddd; background:#fafafa; cursor:pointer; }
-    button:hover { background:#f0f0f0; }
-    h3 { margin-top: 0; }
-    textarea { font: inherit; }
-    input[type=number] { padding: 4px 6px; border-radius: 8px; border: 1px solid #ddd; }
-    pre { background: #fcfcfc; border: 1px solid #eee; border-radius: 8px; padding: 8px; }
-    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center }
+    body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:24px}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    button{padding:8px 12px;border-radius:10px;border:1px solid #ddd;background:#fafafa;cursor:pointer}
+    button[disabled]{opacity:.6;cursor:not-allowed}
+    #status{font-size:14px;color:#555;margin-top:8px}
   </style>
 </head>
 <body>
-  <h1>Admin: Upload & Ingest → Text & Index</h1>
-  <p>Vyplň <code>config.js</code> a připoj Google účet (read/write). Tato stránka může běžet vedle hlavní appky.</p>
+  <h1>Admin – připojení k Google Drive</h1>
 
- 
+  <div class="row">
+    <button id="btnRead"  onclick="connectRead()"  disabled>Připojit (read)</button>
+    <button id="btnWrite" onclick="connectWrite()" disabled>Připojit (write)</button>
+    <button id="btnSrc"   onclick="pickSource()"   disabled>Vybrat zdrojovou složku</button>
+    <button id="btnDst"   onclick="pickDest()"     disabled>Vybrat cílovou složku</button>
+  </div>
+  <p><b>Zdroj:</b> <span id="srcLbl">—</span> &nbsp; | &nbsp; <b>Cíl:</b> <span id="dstLbl">—</span></p>
+  <div id="status">Inicializuji…</div>
 
+  <!-- 1) stáhni config z Netlify env -->
+  <script>
+    window.CONFIG = null;
+    async function loadConfig(){
+      const r = await fetch('/.netlify/functions/public-config', {cache:'no-store'});
+      if(!r.ok) throw new Error('public-config HTTP '+r.status);
+      window.CONFIG = await r.json(); // { GOOGLE_CLIENT_ID, GOOGLE_API_KEY }
+    }
+  </script>
 
-  <section class="card" id="drive-connect">
-    <h3>1) Připojit Google Drive & vybrat složky</h3>
-    <div class="row">
-      <button onclick="connectRead()">Připojit (read)</button>
-      <button onclick="connectWrite()">Připojit (write)</button>
-      <button onclick="pickSource()">Vybrat <b>zdrojovou</b> složku (pro čtení)</button>
-      <button onclick="pickDest()">Vybrat <b>cílovou</b> složku (dataset)</button>
-    </div>
-    <p><b>Zdroj:</b> <span id="srcLbl">—</span> &nbsp; | &nbsp; <b>Cíl:</b> <span id="dstLbl">—</span></p>
-  </section>
+  <!-- 2) Google skripty -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer></script>
 
-  <section class="card" id="upload-admin">
-    <h3>2) Nahrát libovolné soubory (admin je převede na text)</h3>
-    <div class="row">
-      <input id="filePick" type="file" multiple />
-      <label><input type="checkbox" id="saveOriginal" checked> uložit originály do <code>/source</code></label>
-      <label><input type="checkbox" id="asGDoc"> uložit text jako Google Doc (jinak .txt)</label>
-      <label title="OCR pro skeny PDF je volitelný doplněk"><input type="checkbox" id="useOCR" disabled> OCR fallback (volitelný doplněk)</label>
-    </div>
-    <div id="uploadList" style="border:1px solid #eee;border-radius:8px;padding:8px;max-height:220px;overflow:auto;margin-top:8px">—</div>
-    <div class="row" style="margin-top:8px">
-      <button onclick="startUploadConvert()">Nahrát & převést</button>
-    </div>
-    <pre id="uploadLog" style="white-space:pre-wrap;max-height:220px;overflow:auto;margin-top:8px"></pre>
-  </section>
+  <!-- 3) vlastní logika -->
+  <script src="admin.js"></script>
 
-  <section class="card" id="index-admin">
-    <h3>3) Postavit/aktualizovat index</h3>
-    <div class="row">
-      <button onclick="buildIndex()">Postavit/aktualizovat index</button>
-      <label>chunk: <input id="chunkSize" type="number" value="1500" style="width:80px">, overlap: <input id="chunkOverlap" type="number" value="200" style="width:80px"></label>
-    </div>
-    <pre id="indexLog" style="white-space:pre-wrap;max-height:160px;overflow:auto"></pre>
-  </section>
-
-  <section class="card" id="rag-chat">
-    <h3>4) Dotazovat vybranou složku (RAG)</h3>
-    <textarea id="q" placeholder="Zeptej se…" style="width:100%;min-height:80px"></textarea>
-    <div class="row" style="margin-top:6px">
-      <button onclick="ask()">Zeptej se</button>
-      <input id="topK" type="number" value="6" style="width:60px">
-    </div>
-    <div id="ans" style="margin-top:8px; white-space:pre-wrap"></div>
-  </section>
-
-   <script>
-  window.CONFIG = null;
-  (async () => {
-    const r = await fetch('/.netlify/functions/public-config');
-    window.CONFIG = await r.json(); // { GOOGLE_CLIENT_ID, GOOGLE_API_KEY }
-  })();
-</script>
-
-<!-- 2) Google skripty -->
-<script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="https://apis.google.com/js/api.js" async defer></script>
-
-<!-- 3) vlastní logika adminu -->
-<script src="admin.js"></script>
-  
-</body>
-</html>
+  <!-- 4) INIT: odemkni tlačítka až po načtení všeho -->
+  <script>
+    async function waitFor(cond, ms=8000){
+      const t0=Date.now(); return new Promise((res,rej)=>{(function tick(){
+        if(cond()) return res(); if(Date.now()-t0>ms) return rej(new Error('timeout')); setTimeout(tick,120);
+      })()});
+    }
+    (async ()=>{
+      try{
+        await loadConfig();
+        await waitFor(()=>!!(window.google && google.accounts && google.accounts.oauth2));
+        await new Promise(r=>gapi.load('picker', r));
+        ['btnRead','btnWrite','btnSrc','btnDst'].forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled=false; });
+        document.getElementById('status').textContent = 'Připraveno.';
+        console.log('[admin] Ready', {CONFIG, gis:!!(google&&google.accounts&&google.accounts.oauth2)});
+      }catch(e){
+        document.getElementById('status').textContent = 'Inicializace selhala – zkontroluj CONFIG a Google skripty.';
+        console.error(e);
+        alert('Inicializace se nepovedla. Ověř public-config, GOOGLE_CLIENT_ID, GOOGLE_API_KEY a res
