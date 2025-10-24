@@ -252,18 +252,34 @@ async function buildIndex(){
 // Dotazování
 async function ask(){
   if(!dstFolder) return alert('Vyber cílovou složku (kde je index).');
-  if(!tokenRead)  return alert('Nejdřív „Připojit (read)“.');
-  const q=(getEl('q')?.value||'').trim(); const topK=parseInt(getEl('topK')?.value||'6',10); if(!q) return;
-  const out=getEl('ans'); out && (out.textContent='Přemýšlím…');
+  if(!tokenRead) return alert('Nejdřív „Připojit (read)“.');
 
-  const r = await fetch('/.netlify/functions/rag-query', {
-    method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':'Bearer '+tokenRead},
-    body: JSON.stringify({ folderId: dstFolder.id, question: q, topK })
-  });
-  const j = await r.json(); if(!r.ok){ out && (out.textContent='Chyba: '+(j.error||r.statusText)); return; }
-  const cites=(j.citations||[]).map(c=>`[${c.ref}] ${c.file}`).join('\n');
-  out && (out.textContent = j.answer + (cites?`\n\nZdroje:\n${cites}`:''));
+  const q = document.getElementById('q')?.value.trim();
+  const topK = parseInt(document.getElementById('topK')?.value || '6', 10);
+  if(!q) return;
+
+  const out = document.getElementById('ans');
+  out && (out.textContent = 'Přemýšlím…');
+
+  try{
+    const r = await fetch('/.netlify/functions/rag-query', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+tokenRead },
+      body: JSON.stringify({ folderId: dstFolder.id, question: q, topK })
+    });
+
+    const raw = await r.text();
+    let j=null; try{ j=JSON.parse(raw); }catch{}
+    if(!r.ok){
+      out && (out.textContent = 'Chyba: ' + (j?.error || raw || r.statusText));
+      return;
+    }
+
+    const cites = (j.citations||[]).map(c=>`[${c.ref}] ${c.file}`).join('\n');
+    out && (out.textContent = j.answer + (cites ? `\n\nZdroje:\n${cites}` : ''));
+  }catch(e){
+    out && (out.textContent = 'Chyba: ' + e.message);
+  }
 }
 
 // Expose
